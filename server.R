@@ -5,6 +5,44 @@
 examplefile <- "example.ab1"
 exampleguide <- "CACTGGAATGACACACGCCC"
 
+# sangerseqR::chromatogram() uses base graphics and restores the graphics parameters
+# when it finishes, so the highlight is drawn as a transparent overlay that reproduces
+# the geometry of the (single row) chromatogram: same margins, x-limits and trace offsets.
+highlightChromatogramBase <- function(obj, trim5, trim3, target.index,
+                                      col = "darkblue") {
+  avepos <- rowMeans(obj@peakPosMatrix, na.rm = TRUE)
+  avepos <- avepos[(1 + trim5):(length(avepos) - trim3)]
+  
+  last <- min(max(avepos, na.rm = TRUE) + 10, nrow(obj@traceMatrix))
+  offset <- max(c(1, avepos[1] - 10))
+  tracewidth <- floor(floor(last) - offset) + 1
+  rel.pos <- avepos - (offset - 1)
+  
+  midp <- diff(c(0, rel.pos, tracewidth)) / 2
+  k <- target.index - trim5
+  
+  par(new = TRUE, mar = c(2, 2, 2, 1))
+  plot(NA, xlim = c(1, tracewidth), ylim = c(0, 1), type = "n",
+       axes = FALSE, xlab = "", ylab = "")
+  rect(rel.pos[k] - midp[k], 0, rel.pos[k] + midp[k + 1], 1,
+       col = NA, border = col, lwd = 3)
+}
+
+# Draws the protospacer chromatogram (top) and the tile plot (bottom) on the open device.
+# chromatogram() resets par(fig), so the bottom part of the device is reserved through the
+# outer margin and the ggplot is printed into it with a grid viewport.
+drawProtospacerFigure <- function(obj, trim5, trim3, tile.plot, target.index = NULL,
+                                  fig.height = 8, tile.fraction = 0.4) {
+  par(omi = c(fig.height * tile.fraction, 0, 0, 0))
+  chromatogram(obj = obj, showcalls = "none", showhets = FALSE,
+               trim5 = trim5, trim3 = trim3,
+               width = length(obj@primarySeq) - trim5 - trim3)
+  if(!is.null(target.index)){
+    highlightChromatogramBase(obj, trim5 = trim5, trim3 = trim3, target.index = target.index)
+  }
+  print(tile.plot, vp = grid::viewport(y = 0, height = tile.fraction, just = "bottom"))
+}
+
 shinyServer(
   
   function(input, output) {
@@ -130,6 +168,19 @@ shinyServer(
       
       return(guide.coord)
       
+    })
+    
+    # index of the base in the sequencing read where editing is expected (NULL if not set/invalid)
+    expected.edit.indexReactive <- reactive({
+      pos <- input$expected.edit.position
+      if(is.null(pos) || length(pos) != 1 || is.na(pos)) return(NULL)
+      
+      guide.coord <- guide.coordReactive()
+      guide.length <- length(guideReactive())
+      
+      if(pos < 1 || pos > guide.length || pos != round(pos)) return(NULL)
+      
+      guide.coord$start + as.integer(pos) - 1L
     })
     
     
@@ -282,6 +333,13 @@ shinyServer(
       chromatogram(obj = input.basecalls, 
                    trim5 = (guide.coord$start-1), trim3 = length(input.basecalls@primarySeq) - guide.coord$end,
                    width = (guide.coord$end - guide.coord$start + 1))
+      
+      target.index <- expected.edit.indexReactive()
+      if(!is.null(target.index)){
+        highlightChromatogramBase(input.basecalls, trim5 = (guide.coord$start-1),
+                                  trim3 = length(input.basecalls@primarySeq) - guide.coord$end,
+                                  target.index = target.index)
+      }
     })
     
     
@@ -356,9 +414,20 @@ shinyServer(
                    showhets = FALSE,
                    trim5 = (guide.coord$start-1), trim3 = length(input.basecalls@primarySeq) - guide.coord$end,
                    width = (guide.coord$end - guide.coord$start + 1))
+      
+      target.index <- expected.edit.indexReactive()
+      if(!is.null(target.index)){
+        highlightChromatogramBase(input.basecalls, trim5 = (guide.coord$start-1),
+                                  trim3 = length(input.basecalls@primarySeq) - guide.coord$end,
+                                  target.index = target.index)
+      }
     })
     
     output$editing.table.plot <- renderPlot({
+      editing.table.ggReactive()
+    })
+    
+    editing.table.ggReactive <- reactive({
       editing.df <- editing.Reactive()
       sangs.filt <- sangs.filtReactive()
       null.m.params <- nullparams.Reactive()
@@ -399,14 +468,27 @@ shinyServer(
       
 
       
+      # unfilled box around the column of the expected editing position
+      target.index <- expected.edit.indexReactive()
+      box.layer <- NULL
+      if(!is.null(target.index)){
+        col.pos <- match(target.index, sort(unique(edit.spread$index)))
+        if(!is.na(col.pos)){
+          box.layer <- annotate("rect", xmin = col.pos - 0.5, xmax = col.pos + 0.5,
+                                ymin = 0.5, ymax = 4.5,
+                                fill = NA, colour = "darkblue", linewidth = 1.2)
+        }
+      }
+      
       #### make editing_table
       if(any(edit.color$adj.perc != 100)){
 edit.spread %>%
         ggplot(aes(x = as.factor(index), y = focal.base)) + 
         geom_tile(data = edit.color, aes(fill = adj.perc)) + 
         geom_text(aes(label = round(perc, 0)), angle = 0, size = 5) +   
+        box.layer +
         guides(fill = FALSE) + 
-        scale_fill_continuous(low = "#f7a8a8", high = "#9acdee") + 
+        scale_fill_continuous(low = "#f7a8a8", high = "#9acdee") +
         scale_x_discrete(position = "top", labels = editing.df$guide.seq) + 
         labs(x = NULL, y = NULL) + 
         theme(axis.ticks = element_blank(),
@@ -422,8 +504,9 @@ edit.spread %>%
         ggplot(aes(x = as.factor(index), y = focal.base)) + 
         geom_tile(data = edit.color, fill = "#9acdee") + 
         geom_text(aes(label = round(perc, 0)), angle = 0, size = 5) +   
+        box.layer +
         guides(fill = FALSE) + 
-        scale_x_discrete(position = "top", labels = editing.df$guide.seq) + 
+        scale_x_discrete(position = "top", labels = editing.df$guide.seq) +
         labs(x = NULL, y = NULL) + 
         theme(axis.ticks = element_blank(),
               axis.text=element_text(size=16),
@@ -434,6 +517,40 @@ edit.spread %>%
         ) +
         coord_fixed(1)}
     })
+    
+    # export of the protospacer chromatogram together with the percent-area tile plot
+    protospacerFigureDevice <- function(file, type){
+      guide.coord <- guide.coordReactive()
+      input.basecalls <- input.basecallsReactive()
+      tile.plot <- editing.table.ggReactive()
+      target.index <- expected.edit.indexReactive()
+      
+      fig.width <- 14
+      fig.height <- 8
+      if(type == "png"){
+        png(file, width = fig.width, height = fig.height, units = "in", res = 200, bg = "white")
+      } else {
+        svg(file, width = fig.width, height = fig.height, bg = "white")
+      }
+      on.exit(dev.off())
+      
+      drawProtospacerFigure(obj = input.basecalls,
+                            trim5 = (guide.coord$start-1),
+                            trim3 = length(input.basecalls@primarySeq) - guide.coord$end,
+                            tile.plot = tile.plot,
+                            target.index = target.index,
+                            fig.height = fig.height)
+    }
+    
+    output$downloadProtospacerPNG <- downloadHandler(
+      filename = function(){ "EditR_protospacer.png" },
+      content = function(file){ protospacerFigureDevice(file, "png") }
+    )
+    
+    output$downloadProtospacerSVG <- downloadHandler(
+      filename = function(){ "EditR_protospacer.svg" },
+      content = function(file){ protospacerFigureDevice(file, "svg") }
+    )
     
 ###########################################
     output$editing.quad.plot <- renderPlot({

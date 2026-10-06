@@ -31,6 +31,10 @@ shinyUI(
                      numericInput("pvalcutoff", "P-value cutoff:", 0.01, min = 0, max = 1),
                      p("Please enter your cutoff probability (p-value for significance), see instructions for details")
         ),
+    p("Optionally enter the position within the guide (1 = first base of the guide) where editing is expected. It will be highlighted in the chromatogram."),
+    numericInput(inputId = "expected.edit.position",
+                 label = "Expected editing position in guide",
+                 value = NA, min = 1, step = 1),
       p("Data are not stored on the server after the analysis is ran.")
   ),
   
@@ -88,6 +92,9 @@ shinyUI(
                            verticalLayout(
                            plotOutput(outputId = "chromatogram_two"),
                            plotOutput(outputId = "editing.table.plot", width = "93.5%"))),
+                         downloadButton("downloadProtospacerPNG", "Download figure (PNG)"),
+                         downloadButton("downloadProtospacerSVG", "Download figure (SVG)"),
+                         br(), br(),
                           p("The top plot is the chromatogram of the protospacer. Highlighted peaks indicate double peaks were detected, however a peak may still be significant even if not highlighted. \nThe bottom plot shows the percent area of the signal for each base (ACGT) at each position along
                            the guide. Bases that are significantly different from the noise are colored in, color coded
                            relative to their percent area. Most positions of the guide only have one base colored in, as there
