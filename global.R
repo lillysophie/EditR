@@ -417,18 +417,18 @@ SaveGuideFigure <- function(figure, file, format = c("png", "svg")){
 
 EDITING_OFFTARGET_THRESHOLD <- 10
 
-EditingSummaryLines <- function(editing.list, sample.names, position, threshold = EDITING_OFFTARGET_THRESHOLD){
+EditingSummaryLines <- function(perc.list, guide.seq, sample.names, position, threshold = EDITING_OFFTARGET_THRESHOLD){
   # on-target editing at `position` and off-target editing elsewhere in the guide.
+  # perc.list: one matrix per sample (rows = guide positions, columns A, C, G, T) with the percent
+  # of each base - raw percent areas, or Abbott / non-treated normalised values.
   # A change is any base that differs from the guide base; with several samples the
   # percentages are averaged across samples.
   # returns list(on.target = chr, off.target = chr)
   bases <- c("A", "C", "G", "T")
-  n <- length(editing.list)
-  guide.seq <- editing.list[[1]]$guide.seq
-  perc.arrays <- lapply(editing.list, function(df) as.matrix(df[, paste0(bases, ".perc")]))
-  mean.perc <- Reduce(`+`, perc.arrays) / n
+  n <- length(perc.list)
+  mean.perc <- Reduce(`+`, perc.list) / n
   
-  # percent of each non-guide base per position (guide base -> NA)
+  # guide base -> NA
   nonref <- function(m){
     for(i in seq_along(guide.seq)) m[i, bases == toupper(guide.seq[i])] <- NA
     m
@@ -442,7 +442,7 @@ EditingSummaryLines <- function(editing.list, sample.names, position, threshold 
   on.target <- paste0("On-target editing at guide position ", position, " (", ref.base, " to ", bases[main], "): ",
                       fmt(alt[main]))
   if(n > 1){
-    each <- vapply(perc.arrays, function(m) nonref(m)[position, main], numeric(1))
+    each <- vapply(perc.list, function(m) nonref(m)[position, main], numeric(1))
     on.target <- paste0(on.target, " (mean of ", n, " samples; ",
                         paste0(sample.names, ": ", fmt(each), collapse = ", "), ")")
   }
@@ -457,4 +457,14 @@ EditingSummaryLines <- function(editing.list, sample.names, position, threshold 
            toupper(guide.seq[hits[, 1]]), " to ", bases[hits[, 2]], "): ", fmt(mean.nonref[hits]))
   }
   list(on.target = on.target, off.target = off.target)
+}
+
+RawPercMatrix <- function(editing.df){
+  as.matrix(editing.df[, paste0(c("A", "C", "G", "T"), ".perc")])
+}
+
+NormalisedPercMatrix <- function(edited.df, nt.df, het.position){
+  # Abbott-normalised percent of each base (see NormaliseToWildType) as a positions x bases matrix
+  norm.long <- NormaliseToWildType(edited.df, nt.df, het.position)
+  matrix(norm.long$perc, ncol = 4, dimnames = list(NULL, c("A", "C", "G", "T")))
 }

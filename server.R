@@ -545,16 +545,29 @@ shinyServer(
       res <- edited.analysesReactive()
       ok <- which(vapply(res, function(a) is.null(a$error), logical(1)))
       if(length(ok) == 0) return(NULL)
-      EditingSummaryLines(lapply(res[ok], function(a) a$editing.df), sampleLabel(files$name[ok]), pos)
+      
+      # heterozygous sample: use the Abbott-normalised percentages instead of the raw ones
+      het.position <- het_positionReactive()
+      nt <- if(!is.null(het.position) && !is.null(input$file_nt)) nt.Reactive() else NULL
+      use.norm <- !is.null(nt) && is.null(nt$error)
+      if(use.norm) ok <- ok[vapply(res[ok], function(a) nrow(a$editing.df) == nrow(nt$editing.df), logical(1))]
+      if(length(ok) == 0) return(NULL)
+      
+      perc.list <- lapply(res[ok], function(a){
+        if(use.norm) NormalisedPercMatrix(a$editing.df, nt$editing.df, het.position) else RawPercMatrix(a$editing.df)
+      })
+      out <- EditingSummaryLines(perc.list, res[[ok[1]]]$editing.df$guide.seq, sampleLabel(files$name[ok]), pos)
+      out$normalised <- use.norm
+      out
     })
-
-    output$editing_summary <- renderUI({
+        output$editing_summary <- renderUI({
       if(is.null(expectedPositionReactive())){
         return(p(em("Enter the expected editing position in the guide to quantify on-target and off-target editing.")))
       }
       ed <- editingSummaryReactive()
       req(!is.null(ed))
-      wellPanel(h4("Editing summary"), p(strong(ed$on.target)), p(ed$off.target))
+      wellPanel(h4("Editing summary"), p(strong(ed$on.target)), p(ed$off.target),
+                if(isTRUE(ed$normalised)) p(em("Values are normalised to the non-treated sample (Abbott formula at the heterozygous position).")))
     })
 
     output$edited_sections <- renderUI({
@@ -723,7 +736,8 @@ shinyServer(
         trim <- if(!is.na(input$trim5) && !is.na(input$trim3)) paste0("Trimmed region: ", input$trim5, " to ", input$trim3)
         
         ed <- editingSummaryReactive()
-        summary.lines <- if(is.null(ed)) character(0) else c("Editing summary (edited samples):", ed$on.target, ed$off.target)
+        summary.lines <- if(is.null(ed)) character(0) else c("Editing summary (edited samples):", ed$on.target, ed$off.target,
+                                                                        if(isTRUE(ed$normalised)) "Values are normalised to the non-treated sample (Abbott formula at the heterozygous position).")
 
         grDevices::pdf(file, width = 8.27, height = 11.69)
         on.exit(grDevices::dev.off(), add = TRUE)
