@@ -28,21 +28,6 @@ highlightChromatogramBase <- function(obj, trim5, trim3, target.index,
        col = NA, border = col, lwd = 3)
 }
 
-# Draws the protospacer chromatogram (top) and the tile plot (bottom) on the open device.
-# chromatogram() resets par(fig), so the bottom part of the device is reserved through the
-# outer margin and the ggplot is printed into it with a grid viewport.
-drawProtospacerFigure <- function(obj, trim5, trim3, tile.plot, target.index = NULL,
-                                  fig.height = 8, tile.fraction = 0.4) {
-  par(omi = c(fig.height * tile.fraction, 0, 0, 0))
-  chromatogram(obj = obj, showcalls = "none", showhets = FALSE,
-               trim5 = trim5, trim3 = trim3,
-               width = length(obj@primarySeq) - trim5 - trim3)
-  if(!is.null(target.index)){
-    highlightChromatogramBase(obj, trim5 = trim5, trim3 = trim3, target.index = target.index)
-  }
-  print(tile.plot, vp = grid::viewport(y = 0, height = tile.fraction, just = "bottom"))
-}
-
 shinyServer(
   
   function(input, output) {
@@ -51,14 +36,8 @@ shinyServer(
     # reading in file
     input.seqReactive <- reactive({
       # if else things to handle example data loading
-      if(input$example) {
-        return(readsangerseq(examplefile))
-      } else if(!is.null(input$file)) {
-        return(readsangerseq(input$file$datapath))
-      } else return(validate(
-        need(input$file, "Please upload your sanger sequence file")
-      ))
-      
+      files <- edited.filesReactive()
+      readsangerseq(files$datapath[selectedSampleReactive()])
       
     })
     
@@ -128,7 +107,9 @@ shinyServer(
       }else{
         validate(need(!is.na(input$trim3), label = "A value to trim the 3' end "))
         validate(need(!is.na(input$trim5), label = "A value to trim the 5' end "))
-
+        validate(need(input$trim5 >= 1 && input$trim3 <= nrow(sangs) && input$trim5 < input$trim3,
+                      paste0("Trim values must satisfy 1 <= 5' start < 3' end <= ", nrow(sangs),
+                             " (the number of called bases)")))
         sangs.filt <- sangs[input$trim5:input$trim3, ]
         return(sangs.filt)
       }
@@ -159,11 +140,15 @@ shinyServer(
       filt.sequence <- sangs.filt$base.call %>% paste(collapse = "") %>% DNAString()
       
       # this function finds where the guide matches 
-      guide.match <- GetGuideMatch(guideReactive(), filt.sequence)
+      guide.match <- tryCatch(GetGuideMatch(guideReactive(), filt.sequence), error = function(e) NULL)
+      validate(need(!is.null(guide.match) && length(guide.match$start) == 1 && !is.na(guide.match$start) && !is.na(guide.match$end),
+                    "The guide sequence was not found in the sequencing read. Check the guide, the 'Guide sequence is reverse complement' box and the trim values."))
       
       # Finding the index values
       guide.coord <- list(start = sangs.filt[guide.match$start, "index"],
                           end = sangs.filt[guide.match$end, "index"])
+      validate(need(!anyNA(guide.coord),
+                    "The guide sequence was not found in the sequencing read. Check the guide, the 'Guide sequence is reverse complement' box and the trim values."))
       
       
       return(guide.coord)
@@ -217,27 +202,19 @@ shinyServer(
     })
     
     
-    ### Making QC plots
+    ### Making QC plots (one set per uploaded edited file, built from edited.analysesReactive)
     
-    output$prefilter.totalarea <- renderPlot({
-      guide.coord <- guide.coordReactive()
-      sangs <- sangsReactive()
-      ggplot(sangs, aes(x = index, y = Tot.area)) +
-        geom_rect(xmin = guide.coord$start, xmax = guide.coord$end, ymin = 0, ymax = Inf, fill = "lightgrey") +
+    qcPrefilterPlot <- function(a){
+      ggplot(a$sangs, aes(x = index, y = Tot.area)) +
+        geom_rect(xmin = a$guide.coord$start, xmax = a$guide.coord$end, ymin = 0, ymax = Inf, fill = "lightgrey") +
         geom_line() +
         labs(x = "Base position",
              y = "Total peak area at base position (A + T + C + G)",
              title = "Unfiltered data, total peak area")
-    })
+    }
     
-    output$postfilter.signal.noise <- renderPlotly({
-      guide.coord <- guide.coordReactive()
-      sangs.filt <- sangs.filtReactive()
-      sangs <- sangsReactive()
-      
-      ## doing some data rearrangement for plotting
-      
-      catch <- sangs.filt %>% dplyr::select(A.area:T.area, A.perc:T.perc, base.call, index)
+    qcSignalNoiseLong <- function(a){
+      catch <- a$sangs.filt %>% dplyr::select(A.area:T.area, A.perc:T.perc, base.call, index)
       catch %<>% gather( key = base, value = value,
                          A.area:T.area, A.perc:T.perc) %>%
         separate(col = base, into = c("base", "measure"))
@@ -251,16 +228,18 @@ shinyServer(
         filter(base == base.call) %>% 
         summarize(signal = sum(value))
       
-      summary.df <- left_join(noise,signal) %>%
+      summary.df <- left_join(noise, signal) %>%
         gather(key = type, value = value, noise, signal)
       
-      sangs.plot <- sangs.filt %>% dplyr::select(index, base.call) 
+      sangs.plot <- a$sangs.filt %>% dplyr::select(index, base.call) 
       sangs.plot %<>% left_join(summary.df)
-      
-      ## now acutally making the plot
-      
       sangs.plot$type <- ordered(sangs.plot$type, levels = c("signal", "noise"))
-      
+      sangs.plot
+    }
+    
+    qcSignalNoiseGg <- function(a){
+      sangs.plot <- qcSignalNoiseLong(a)
+      guide.coord <- a$guide.coord
       max.height <- filter(sangs.plot, measure == "area") %>% select(value) %>% max
       
       guide.region <- data.frame(index = c(guide.coord$start, guide.coord$end,
@@ -276,80 +255,47 @@ shinyServer(
              x = "Position",
              y = "Peak Area") + 
         theme(legend.title = element_blank())
-      ggplotly(p)
-      
-    })
+      p
+    }
     
-    output$postfilter.noise.perc <- renderPlot({
-      guide.coord <- guide.coordReactive()
-      sangs.filt <- sangs.filtReactive()
-      
-      guide.coord <- guide.coordReactive()
-      sangs.filt <- sangs.filtReactive()
-      
-      ## doing some data rearrangement for plotting
-      
-      catch <- sangs.filt %>% dplyr::select(A.area:T.area, A.perc:T.perc, base.call, index)
-      catch %<>% gather( key = base, value = value,
-                         A.area:T.area, A.perc:T.perc) %>%
-        separate(col = base, into = c("base", "measure"))
-      
-      # splitting the catch dataframe into either signal and noise, and calculating the 
-      # total noise area or total noise percent
-      noise <- catch %>% 
-        group_by(index, measure) %>% 
-        filter(base != base.call) %>%
-        summarize(noise = sum(value))
-      signal <- catch %>%
-        group_by(index, measure) %>%
-        filter(base == base.call) %>% 
-        summarize(signal = sum(value))
-      
-      signal.noise.df <- left_join(noise,signal) %>%
-        gather(key = type, value = value, noise, signal)
-      
-      # making the plotting df
-      sangs.plot <- sangs.filt %>% dplyr::select(index, base.call) 
-      sangs.plot %<>% left_join(signal.noise.df)
-      sangs.plot$type <- ordered(sangs.plot$type, levels = c("signal", "noise"))
-      
-      sangs.plot %>% filter(measure == "perc", type == "noise") %>%
+    qcSignalNoisePlot <- function(a) ggplotly(qcSignalNoiseGg(a))
+    
+    qcNoisePercPlot <- function(a){
+      guide.coord <- a$guide.coord
+      qcSignalNoiseLong(a) %>% filter(measure == "perc", type == "noise") %>%
         ggplot(aes(x = index, y = value)) +
         geom_area(aes(fill = type)) +
         scale_fill_manual(values = c("#e66101")) + 
         annotate("rect", xmin=guide.coord$start, xmax=guide.coord$end,
                  ymin=0, ymax=Inf, alpha=1/5, fill="black") +
-        guides(fill = FALSE) + 
+        guides(fill = "none") + 
         labs(title = "Percent peak area noise",
              x = "Position",
              y = "Percent peak area noise")
-    })
+    }
     
-    
-    output$chromatogram <- renderPlot({
-      guide.coord <- guide.coordReactive()
-      input.basecalls <- input.basecallsReactive()
-      
-      chromatogram(obj = input.basecalls, 
-                   trim5 = (guide.coord$start-1), trim3 = length(input.basecalls@primarySeq) - guide.coord$end,
+    qcChromatogram <- function(a){
+      guide.coord <- a$guide.coord
+      basecalls <- a$basecalls
+      trim3 <- length(basecalls@primarySeq) - guide.coord$end
+      chromatogram(obj = basecalls, 
+                   trim5 = (guide.coord$start-1), trim3 = trim3,
                    width = (guide.coord$end - guide.coord$start + 1))
       
-      target.index <- expected.edit.indexReactive()
-      if(!is.null(target.index)){
-        highlightChromatogramBase(input.basecalls, trim5 = (guide.coord$start-1),
-                                  trim3 = length(input.basecalls@primarySeq) - guide.coord$end,
-                                  target.index = target.index)
+      pos <- expectedPositionReactive()
+      if(!is.null(pos)){
+        highlightChromatogramBase(basecalls, trim5 = (guide.coord$start-1), trim3 = trim3,
+                                  target.index = guide.coord$start + pos - 1L)
       }
-    })
+    }
     
-    
-    base.infoReactive <- reactive({
+    baseInfoFor <- function(a){
       # this reactive is collecting information on each base:
       # - average percent signal
       # critical value for each base for the cutoff of significance
       
-      sangs.filt <- sangs.filtReactive()
-      null.m.params <- nullparams.Reactive()
+      sangs.filt <- a$sangs.filt
+      null.m.params <- a$null.m.params
       p.val.cutoff <- p.val.Reactive()
       
       # finding the average percent signal for each base
@@ -390,12 +336,15 @@ shinyServer(
       mulvec <- c(a = mul$a, c = mul$c, g = mul$g, t = mul$t)
       
       return(data.frame(avg.base, crit.perc.area = crit.vals, mu = mulvec, fillibens = filvec))
+    }
+    
+    base.infoReactive <- reactive({
+      baseInfoFor(list(sangs.filt = sangs.filtReactive(), null.m.params = nullparams.Reactive()))
     })
     
     
-    output$baseinfo.table <- renderTable({
-      base.info <- base.infoReactive()
-      
+    baseInfoTable <- function(base.info){
+      temp <- base.info
       temp <- base.info
       names(temp) <- c("Base", "Average percent signal",
                        "Average peak area",  "Critical percent value",
@@ -403,159 +352,238 @@ shinyServer(
       row.names(temp) <- NULL
       
       return(temp)
-    })
-    
-    ##############################################
-    output$chromatogram_two <- renderPlot({
-      guide.coord <- guide.coordReactive()
-      input.basecalls <- input.basecallsReactive()
-      chromatogram(obj = input.basecalls,
-                   showcalls = "none",
-                   showhets = FALSE,
-                   trim5 = (guide.coord$start-1), trim3 = length(input.basecalls@primarySeq) - guide.coord$end,
-                   width = (guide.coord$end - guide.coord$start + 1))
-      
-      target.index <- expected.edit.indexReactive()
-      if(!is.null(target.index)){
-        highlightChromatogramBase(input.basecalls, trim5 = (guide.coord$start-1),
-                                  trim3 = length(input.basecalls@primarySeq) - guide.coord$end,
-                                  target.index = target.index)
-      }
-    })
-    
-    output$editing.table.plot <- renderPlot({
-      editing.table.ggReactive()
-    })
-    
-    editing.table.ggReactive <- reactive({
-      editing.df <- editing.Reactive()
-      sangs.filt <- sangs.filtReactive()
-      null.m.params <- nullparams.Reactive()
-      p.val.cutoff <- p.val.Reactive()
-      
-      #### Repeat code for getting avg.base from base.infoReactive
-      # finding the average percent signal for each base
-      avg.base <- sangs.filt %>% gather(key = focal.base, value = value, 
-                                        A.area:T.area, A.perc:T.perc) %>%
-        separate(col = focal.base, into = c("focal.base", "measure")) %>% 
-        spread(key = measure, value = value) %>% 
-        filter(base.call == focal.base) %>% 
-        group_by(focal.base) %>% 
-        summarize(avg.percsignal = mean(perc),
-                  avg.areasignal = mean(area))
-      
-      # finding the model mu
-      mul <- lapply(null.m.params, FUN = function(x){x$mu})
-      mulvec <- c(a = mul$a, c = mul$c, g = mul$g, t = mul$t)
-      ####
-      
-      ### Reshape data
-      
-      edit.long <- editing.df %>% gather(key = focal.base, value = value, 
-                                         A.area:T.area, A.perc:T.perc, T.pval:A.pval) %>%
-        separate(col = focal.base, into = c("focal.base", "measure"))
-      
-      edit.spread <- edit.long %>% 
-        spread(key = measure, value = value) 
-      
-      color.cutoff = min(avg.base$avg.percsignal - mulvec)
-      edit.color <- edit.spread %>% 
-        mutate(adj.perc = {ifelse(perc >= color.cutoff,
-                                  100,
-                                  perc)
-        } %>% as.numeric) %>%
-        filter(pval < p.val.cutoff)
-      
-
-      
-      # unfilled box around the column of the expected editing position
-      target.index <- expected.edit.indexReactive()
-      box.layer <- NULL
-      if(!is.null(target.index)){
-        col.pos <- match(target.index, sort(unique(edit.spread$index)))
-        if(!is.na(col.pos)){
-          box.layer <- annotate("rect", xmin = col.pos - 0.5, xmax = col.pos + 0.5,
-                                ymin = 0.5, ymax = 4.5,
-                                fill = NA, colour = "darkblue", linewidth = 1.2)
-        }
-      }
-      
-      #### make editing_table
-      if(any(edit.color$adj.perc != 100)){
-edit.spread %>%
-        ggplot(aes(x = as.factor(index), y = focal.base)) + 
-        geom_tile(data = edit.color, aes(fill = adj.perc)) + 
-        geom_text(aes(label = round(perc, 0)), angle = 0, size = 5) +   
-        box.layer +
-        guides(fill = FALSE) + 
-        scale_fill_continuous(low = "#f7a8a8", high = "#9acdee") +
-        scale_x_discrete(position = "top", labels = editing.df$guide.seq) + 
-        labs(x = NULL, y = NULL) + 
-        theme(axis.ticks = element_blank(),
-              axis.text=element_text(size=16),
-              plot.title = element_text(hjust = 0, size = 16),
-              plot.margin=unit(c(0,0,0,2), "cm"), #c(top, bottom, left, right)
-              panel.background = element_rect(fill = "transparent",colour = NA), # or theme_blank()
-              plot.background = element_rect(fill = "transparent",colour = NA)
-        ) +
-        coord_fixed(1)} 
-      else
-      {edit.spread %>%
-        ggplot(aes(x = as.factor(index), y = focal.base)) + 
-        geom_tile(data = edit.color, fill = "#9acdee") + 
-        geom_text(aes(label = round(perc, 0)), angle = 0, size = 5) +   
-        box.layer +
-        guides(fill = FALSE) + 
-        scale_x_discrete(position = "top", labels = editing.df$guide.seq) +
-        labs(x = NULL, y = NULL) + 
-        theme(axis.ticks = element_blank(),
-              axis.text=element_text(size=16),
-              plot.title = element_text(hjust = 0, size = 16),
-              plot.margin=unit(c(0,0,0,2), "cm"), #c(top, bottom, left, right)
-              panel.background = element_rect(fill = "transparent",colour = NA), # or theme_blank()
-              plot.background = element_rect(fill = "transparent",colour = NA)
-        ) +
-        coord_fixed(1)}
-    })
-    
-    # export of the protospacer chromatogram together with the percent-area tile plot
-    protospacerFigureDevice <- function(file, type){
-      guide.coord <- guide.coordReactive()
-      input.basecalls <- input.basecallsReactive()
-      tile.plot <- editing.table.ggReactive()
-      target.index <- expected.edit.indexReactive()
-      
-      fig.width <- 14
-      fig.height <- 8
-      if(type == "png"){
-        png(file, width = fig.width, height = fig.height, units = "in", res = 200, bg = "white")
-      } else {
-        svg(file, width = fig.width, height = fig.height, bg = "white")
-      }
-      on.exit(dev.off())
-      
-      drawProtospacerFigure(obj = input.basecalls,
-                            trim5 = (guide.coord$start-1),
-                            trim3 = length(input.basecalls@primarySeq) - guide.coord$end,
-                            tile.plot = tile.plot,
-                            target.index = target.index,
-                            fig.height = fig.height)
     }
     
-    output$downloadProtospacerPNG <- downloadHandler(
-      filename = function(){ "EditR_protospacer.png" },
-      content = function(file){ protospacerFigureDevice(file, "png") }
-    )
+    ##############################################
+    ## Uploaded files: several edited samples, one non-treated control
     
-    output$downloadProtospacerSVG <- downloadHandler(
-      filename = function(){ "EditR_protospacer.svg" },
-      content = function(file){ protospacerFigureDevice(file, "svg") }
-    )
+    edited.filesReactive <- reactive({
+      if(input$example){
+        return(data.frame(name = "example.ab1", datapath = examplefile, stringsAsFactors = FALSE))
+      }
+      validate(need(!is.null(input$file), "Please upload your sanger sequence file(s)"))
+      data.frame(name = input$file$name, datapath = input$file$datapath, stringsAsFactors = FALSE)
+    })
     
+    selectedSampleReactive <- reactive({ 1L })
+    
+    
+    
+    safeAnalyse <- function(path, guide, trim5, trim3){
+      tryCatch(AnalyseSangerSample(readsangerseq(path), guide, trim5, trim3),
+               error = function(e) list(error = conditionMessage(e)))
+    }
+    
+    edited.analysesReactive <- reactive({
+      files <- edited.filesReactive()
+      guide <- guideReactive()
+      trim5 <- input$trim5
+      trim3 <- input$trim3
+      lapply(files$datapath, safeAnalyse, guide = guide, trim5 = trim5, trim3 = trim3)
+    })
+    
+    nt.Reactive <- reactive({
+      req(!input$example, input$file_nt)
+      safeAnalyse(input$file_nt$datapath, guideReactive(), input$trim5, input$trim3)
+    })
+    
+    het_positionReactive <- reactive({
+      if(!isTRUE(input$heterozygous) || input$example) return(NULL)
+      pos <- input$het_position
+      validate(need(!is.null(pos) && !is.na(pos) && pos >= 1 &&
+                      pos <= length(guideReactive()) && pos == round(pos),
+                    "Please enter a valid heterozygous position within the guide"))
+      as.integer(pos)
+    })
+    
+    expectedPositionReactive <- reactive({
+      pos <- input$expected.edit.position
+      if(is.null(pos) || length(pos) != 1 || is.na(pos)) return(NULL)
+      if(pos < 1 || pos > length(guideReactive()) || pos != round(pos)) return(NULL)
+      as.integer(pos)
+    })
+    
+    sampleTableData <- function(a){
+      EditingTableData(a$editing.df, a$sangs.filt, a$null.m.params, p.val.Reactive())
+    }
+    
+    sampleFigure <- function(a, highlight, title){
+      table.data <- sampleTableData(a)
+      GuideFigure(GuideChromatogramPlot(GuideTraceData(a$basecalls, a$guide.coord),
+                                        length(table.data$guide.seq), highlight),
+                  GuideTablePlot(table.data, highlight), title)
+    }
+    
+    normalisedFigure <- function(a, nt, het.position, title){
+      norm.long <- NormaliseToWildType(a$editing.df, nt$editing.df, het.position)
+      table.data <- NormalisedTableData(norm.long, sampleTableData(a), p.val.Reactive())
+      GuideFigure(GuideChromatogramPlot(NormalisedTraceData(norm.long), length(table.data$guide.seq),
+                                        het.position, y.label = "Normalised base area (%)", y.max = 100),
+                  GuideTablePlot(table.data, het.position), title)
+    }
+    
+    # PNG and SVG export of chromatogram + table as one figure
+    figureDownloads <- function(id, label.fun, figure.reactive){
+      output[[paste0("download_", id, "_png")]] <- downloadHandler(
+        filename = function() paste0("EditR_", label.fun(), ".png"),
+        content = function(file) SaveGuideFigure(figure.reactive(), file, "png"))
+      output[[paste0("download_", id, "_svg")]] <- downloadHandler(
+        filename = function() paste0("EditR_", label.fun(), ".svg"),
+        content = function(file) SaveGuideFigure(figure.reactive(), file, "svg"))
+    }
+    
+    sampleLabel <- function(name) tools::file_path_sans_ext(name)
+    
+    # outputs for edited sample i (edited and normalised figure + downloads), created once per index
+    makeSampleOutputs <- function(i){
+      local({
+        edited.fig <- reactive({
+          a <- edited.analysesReactive()[[i]]
+          req(!is.null(a), is.null(a$error))
+          sampleFigure(a, expectedPositionReactive(), edited.filesReactive()$name[i])
+        })
+        norm.fig <- reactive({
+          a <- edited.analysesReactive()[[i]]
+          nt <- nt.Reactive()
+          het.position <- het_positionReactive()
+          req(!is.null(a), is.null(a$error), is.null(nt$error), !is.null(het.position),
+              nrow(a$editing.df) == nrow(nt$editing.df))
+          normalisedFigure(a, nt, het.position,
+                           paste0("Normalised base areas: ", edited.filesReactive()$name[i]))
+        })
+        qc.data <- reactive({
+          a <- edited.analysesReactive()[[i]]
+          req(!is.null(a), is.null(a$error))
+          a
+        })
+        output[[paste0("qc_prefilter_", i)]] <- renderPlot({ qcPrefilterPlot(qc.data()) })
+        output[[paste0("qc_signal_", i)]] <- renderPlotly({ qcSignalNoisePlot(qc.data()) })
+        output[[paste0("qc_noise_", i)]] <- renderPlot({ qcNoisePercPlot(qc.data()) })
+        output[[paste0("qc_chrom_", i)]] <- renderPlot({ qcChromatogram(qc.data()) })
+        output[[paste0("baseinfo_table_", i)]] <- renderTable({ baseInfoTable(baseInfoFor(qc.data())) })
+        output[[paste0("quad_plot_", i)]] <- renderPlot({ grid::grid.draw(quadPlotFor(qc.data())) })
+        output[[paste0("figure_edited_", i)]] <- renderPlot({ edited.fig() })
+        output[[paste0("figure_norm_", i)]] <- renderPlot({ norm.fig() })
+        figureDownloads(paste0("edited_", i),
+                        function() paste0(sampleLabel(edited.filesReactive()$name[i]), "_edited"), edited.fig)
+        figureDownloads(paste0("norm_", i),
+                        function() paste0(sampleLabel(edited.filesReactive()$name[i]), "_normalised"), norm.fig)
+      })
+    }
+    
+    outputs.created <- 0
+    observe({
+      req(input$example || !is.null(input$file))
+      n <- nrow(edited.filesReactive())
+      while(outputs.created < n){
+        outputs.created <<- outputs.created + 1
+        makeSampleOutputs(outputs.created)
+      }
+    })
+    
+    errorText <- function(msg) p(style = "color: #b94a48;", msg)
+    figureBlock <- function(id, height = "480px"){
+      tagList(plotOutput(paste0("figure_", id), height = height),
+              downloadButton(paste0("download_", id, "_png"), "Download PNG"),
+              downloadButton(paste0("download_", id, "_svg"), "Download SVG"),
+              br(), br())
+    }
+    
+    # QC / base info / quad plot blocks; id is the edited index or "nt" for the non-treated sample
+    qcBlock <- function(id, name, a){
+      if(!is.null(a$error)) return(tagList(h2(name), errorText(a$error), hr()))
+      tagList(h2(name),
+              plotOutput(paste0("qc_prefilter_", id)),
+              plotlyOutput(paste0("qc_signal_", id)),
+              plotOutput(paste0("qc_noise_", id)),
+              plotOutput(paste0("qc_chrom_", id)),
+              hr())
+    }
+    infoBlock <- function(id, name, a){
+      head <- h3(paste0("Base info: ", name))
+      if(!is.null(a$error)) tagList(head, errorText(a$error))
+      else tagList(head, tableOutput(paste0("baseinfo_table_", id)))
+    }
+    quadBlock <- function(id, name, a){
+      head <- h3(paste0("Quad plot: ", name))
+      if(!is.null(a$error)) tagList(head, errorText(a$error))
+      else tagList(head, plotOutput(paste0("quad_plot_", id)))
+    }
+    
+    # edited samples followed by the non-treated sample (if uploaded)
+    allSampleBlocks <- function(block, nt.label){
+      files <- edited.filesReactive()
+      res <- edited.analysesReactive()
+      blocks <- lapply(seq_len(nrow(files)), function(i) block(i, files$name[i], res[[i]]))
+      if(!isTRUE(input$example) && !is.null(input$file_nt)){
+        blocks <- c(blocks, list(block("nt", paste0(input$file_nt$name, " (", nt.label, ")"), nt.Reactive())))
+      }
+      blocks
+    }
+    
+    output$qc_sections <- renderUI({ allSampleBlocks(qcBlock, "non-treated") })
+    output$baseinfo_sections <- renderUI({ allSampleBlocks(infoBlock, "non-treated") })
+    output$quad_sections <- renderUI({ allSampleBlocks(quadBlock, "non-treated") })
+    
+    nt.qc.data <- reactive({
+      nt <- nt.Reactive()
+      req(is.null(nt$error))
+      nt
+    })
+    output$qc_prefilter_nt <- renderPlot({ qcPrefilterPlot(nt.qc.data()) })
+    output$qc_signal_nt <- renderPlotly({ qcSignalNoisePlot(nt.qc.data()) })
+    output$qc_noise_nt <- renderPlot({ qcNoisePercPlot(nt.qc.data()) })
+    output$qc_chrom_nt <- renderPlot({ qcChromatogram(nt.qc.data()) })
+    output$baseinfo_table_nt <- renderTable({ baseInfoTable(baseInfoFor(nt.qc.data())) })
+    output$quad_plot_nt <- renderPlot({ grid::grid.draw(quadPlotFor(nt.qc.data())) })
+    
+    output$edited_sections <- renderUI({
+      files <- edited.filesReactive()
+      res <- edited.analysesReactive()
+      lapply(seq_len(nrow(files)), function(i){
+        if(!is.null(res[[i]]$error)){
+          tagList(h3(files$name[i]), errorText(res[[i]]$error))
+        } else figureBlock(paste0("edited_", i))
+      })
+    })
+    
+    output$nt_section <- renderUI({
+      if(is.null(input$file_nt)) return(p("No non-treated sample uploaded."))
+      nt <- nt.Reactive()
+      if(!is.null(nt$error)) return(tagList(h3(input$file_nt$name), errorText(nt$error)))
+      figureBlock("nt")
+    })
+    
+    nt.fig <- reactive({
+      nt <- nt.Reactive()
+      req(is.null(nt$error))
+      sampleFigure(nt, NULL, input$file_nt$name)
+    })
+    output$figure_nt <- renderPlot({ nt.fig() })
+    figureDownloads("nt", function() paste0(sampleLabel(input$file_nt$name), "_non-treated"), nt.fig)
+    
+    output$norm_sections <- renderUI({
+      het.position <- het_positionReactive()
+      files <- edited.filesReactive()
+      res <- edited.analysesReactive()
+      if(is.null(input$file_nt)){
+        return(p("Please upload a non-treated sample to normalise to."))
+      }
+      nt <- nt.Reactive()
+      lapply(seq_len(nrow(files)), function(i){
+        a <- res[[i]]
+        problem <- if(!is.null(nt$error)) paste0("Non-treated sample: ", nt$error)
+        else if(!is.null(a$error)) a$error
+        else if(nrow(a$editing.df) != nrow(nt$editing.df))
+          "Guide regions of the non-treated and edited sample have different lengths"
+        if(!is.null(problem)) tagList(h3(files$name[i]), errorText(problem))
+        else figureBlock(paste0("norm_", i))
+      })
+    })
 ###########################################
-    output$editing.quad.plot <- renderPlot({
-      editing.df <- editing.Reactive()
-      null.m.params <- nullparams.Reactive()
+    quadPlotFor <- function(a){
+      editing.df <- a$editing.df
+      null.m.params <- a$null.m.params
       p.val.cutoff <- p.val.Reactive()
       
       edit.long <- editing.df %>% gather(key = focal.base, value = value, 
@@ -571,8 +599,8 @@ edit.spread %>%
       p.t <- makeEditingBarPlot(edit.long, null.m.params$t,
                                 base = "T", pval = p.val.cutoff, editing.df)
       
-      grid.arrange(p.a, p.c, p.g, p.t)
-    })
+      arrangeGrob(p.a, p.c, p.g, p.t)
+    }
 
 
 
@@ -616,38 +644,87 @@ edit.spread %>%
     
 #################################3
     
-    output$downloadReport <- downloadHandler(
-      # For PDF output, change this to "report.pdf"
-      filename = "report.html",
-      content = function(file) {
-        # Copy the report file to a temporary directory before processing it, in
-        # case we don't have write permissions to the current working dir (which
-        # can happen when deployed).
-        tempReport <- file.path(tempdir(), "report.Rmd")
-        file.copy("report.Rmd", tempReport, overwrite = TRUE)
-        
-        # Set up parameters to pass to Rmd document
-         # pulling in the reactive things to generate the report with:
-        
-        params <- list(null.m.params = nullparams.Reactive(),
-                       guide = guideReactive(),
-                       guide.coord = guide.coordReactive(),
-                       editing.df = editing.Reactive(),
-                       p.val.cutoff = p.val.Reactive(),
-                       input.seq = input.seqReactive(),
-                       sangs = sangsReactive(),
-                       sangs.filt = sangs.filtReactive(),
-                       base.info = base.infoReactive(),
-                       editrversion = editrversion)
-        
-        # Knit the document, passing in the `params` list, and eval it in a
-        # child of the global environment (this isolates the code in the document
-        # from the code in this app).
-        rmarkdown::render(tempReport, output_file = file,
-                          params = params,
-                          envir = new.env(parent = globalenv())
-        )
+    # PDF report with every sample (edited and non-treated). Drawn directly with the pdf device,
+    # so no pandoc / LaTeX installation is needed.
+    reportPage <- function(title, grob){
+      grid::grid.newpage()
+      grid::grid.draw(gridExtra::arrangeGrob(
+        grob, top = grid::textGrob(title, x = 0.03, hjust = 0, gp = grid::gpar(fontface = "bold", fontsize = 13)),
+        padding = grid::unit(0.5, "cm")))
+    }
+    
+    reportTextPage <- function(title, lines){
+      grid::grid.newpage()
+      grid::grid.text(title, x = 0.05, y = 0.95, just = c("left", "top"), gp = grid::gpar(fontface = "bold", fontsize = 16))
+      grid::grid.text(paste(lines, collapse = "\n"), x = 0.05, y = 0.90, just = c("left", "top"),
+                      gp = grid::gpar(fontsize = 10, lineheight = 1.3))
+    }
+    
+    reportSamplePages <- function(name, role, a, het.position, nt = NULL){
+      label <- paste0(name, " (", role, ")")
+      if(!is.null(a$error)){
+        reportTextPage(label, c("This sample could not be analysed:", a$error))
+        return(invisible())
       }
+      # QC
+      qc <- arrangeGrob(qcPrefilterPlot(a), qcSignalNoiseGg(a), qcNoisePercPlot(a), ncol = 1)
+      reportPage(paste0("Data QC: ", label), qc)
+      # chromatogram + percent area table
+      print(sampleFigure(a, if(role == "edited") expectedPositionReactive() else NULL, name))
+      # base info and quad plot
+      info <- baseInfoTable(baseInfoFor(a))
+      info[] <- lapply(info, function(x) if(is.numeric(x)) signif(x, 4) else x)
+      tab <- gridExtra::tableGrob(info, rows = NULL, theme = gridExtra::ttheme_minimal(base_size = 9))
+      reportPage(paste0("Base info and quad plot: ", label),
+                 arrangeGrob(tab, quadPlotFor(a), ncol = 1, heights = c(1, 4)))
+      # normalised
+      if(!is.null(nt) && !is.null(het.position)){
+        if(!is.null(nt$error)) {
+          reportTextPage(paste0("Normalised: ", name), paste0("Non-treated sample: ", nt$error))
+        } else if(nrow(a$editing.df) != nrow(nt$editing.df)) {
+          reportTextPage(paste0("Normalised: ", name),
+                         "Guide regions of the non-treated and edited sample have different lengths")
+        } else {
+          print(normalisedFigure(a, nt, het.position, paste0("Normalised base areas: ", name)))
+        }
+      }
+    }
+    
+    output$downloadReport <- downloadHandler(
+      filename = function() paste0("EditR_report_", format(Sys.Date(), "%Y%m%d"), ".pdf"),
+      content = function(file) {
+        files <- edited.filesReactive()
+        res <- edited.analysesReactive()
+        het.position <- het_positionReactive()
+        has.nt <- !isTRUE(input$example) && !is.null(input$file_nt)
+        nt <- if(has.nt) nt.Reactive() else NULL
+        
+        trim <- if(!is.na(input$trim5) && !is.na(input$trim3)) paste0(input$trim5, " to ", input$trim3)
+                else "automatic (first 20 bases and low-signal tail removed)"
+        
+        grDevices::pdf(file, width = 8.27, height = 11.69)
+        on.exit(grDevices::dev.off(), add = TRUE)
+        
+        reportTextPage(paste0("EditR v", editrversion, " report"), c(
+          paste0("Date: ", format(Sys.time(), "%Y-%m-%d %H:%M")),
+          paste0("Guide sequence: ", as.character(guideReactive()), " (as searched in the read)"),
+          paste0("P-value cutoff: ", p.val.Reactive()),
+          paste0("Trimmed region: ", trim),
+          paste0("Heterozygous position in guide: ", if(is.null(het.position)) "not used" else het.position),
+          paste0("Expected editing position in guide: ", if(is.null(expectedPositionReactive())) "not set" else expectedPositionReactive()),
+          "",
+          "Edited samples:",
+          paste0("  - ", files$name),
+          "",
+          paste0("Non-treated sample: ", if(has.nt) input$file_nt$name else "none")
+        ))
+        
+        for(i in seq_len(nrow(files))){
+          reportSamplePages(files$name[i], "edited", res[[i]], het.position, nt)
+        }
+        if(has.nt) reportSamplePages(input$file_nt$name, "non-treated", nt, NULL)
+      },
+      contentType = "application/pdf"
     )
 
 })
