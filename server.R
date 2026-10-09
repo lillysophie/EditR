@@ -694,6 +694,12 @@ shinyServer(
                       gp = grid::gpar(fontsize = 10, lineheight = 1.3))
     }
     
+    # figure occupies the top half of a fresh page
+    printHalfPage <- function(p){
+      grid::grid.newpage()
+      print(p, vp = grid::viewport(x = 0.5, y = 1, width = 1, height = 0.5, just = c("center", "top")))
+    }
+
     reportSamplePages <- function(name, role, a, het.position, nt = NULL){
       label <- paste0(name, " (", role, ")")
       if(!is.null(a$error)){
@@ -704,7 +710,7 @@ shinyServer(
       qc <- arrangeGrob(qcPrefilterPlot(a), qcSignalNoiseGg(a), qcNoisePercPlot(a), ncol = 1)
       reportPage(paste0("Data QC: ", label), qc)
       # chromatogram + percent area table
-      print(sampleFigure(a, if(role == "edited") expectedPositionReactive() else NULL, name))
+      printHalfPage(sampleFigure(a, if(role == "edited") expectedPositionReactive() else NULL, name))
       # base info and quad plot
       info <- baseInfoTable(baseInfoFor(a))
       info[] <- lapply(info, function(x) if(is.numeric(x)) signif(x, 4) else x)
@@ -719,7 +725,7 @@ shinyServer(
           reportTextPage(paste0("Normalised: ", name),
                          "Guide regions of the non-treated and edited sample have different lengths")
         } else {
-          print(normalisedFigure(a, nt, het.position, paste0("Normalised base areas: ", name)))
+          printHalfPage(normalisedFigure(a, nt, het.position, paste0("Normalised base areas: ", name)))
         }
       }
     }
