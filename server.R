@@ -537,6 +537,26 @@ shinyServer(
     output$baseinfo_table_nt <- renderTable({ baseInfoTable(baseInfoFor(nt.qc.data())) })
     output$quad_plot_nt <- renderPlot({ grid::grid.draw(quadPlotFor(nt.qc.data())) })
     
+    # on-/off-target editing summary of the successfully analysed edited samples
+    editingSummaryReactive <- reactive({
+      pos <- expectedPositionReactive()
+      if(is.null(pos)) return(NULL)
+      files <- edited.filesReactive()
+      res <- edited.analysesReactive()
+      ok <- which(vapply(res, function(a) is.null(a$error), logical(1)))
+      if(length(ok) == 0) return(NULL)
+      EditingSummaryLines(lapply(res[ok], function(a) a$editing.df), sampleLabel(files$name[ok]), pos)
+    })
+
+    output$editing_summary <- renderUI({
+      if(is.null(expectedPositionReactive())){
+        return(p(em("Enter the expected editing position in the guide to quantify on-target and off-target editing.")))
+      }
+      ed <- editingSummaryReactive()
+      req(!is.null(ed))
+      wellPanel(h4("Editing summary"), p(strong(ed$on.target)), p(ed$off.target))
+    })
+
     output$edited_sections <- renderUI({
       files <- edited.filesReactive()
       res <- edited.analysesReactive()
@@ -656,7 +676,8 @@ shinyServer(
     reportTextPage <- function(title, lines){
       grid::grid.newpage()
       grid::grid.text(title, x = 0.05, y = 0.95, just = c("left", "top"), gp = grid::gpar(fontface = "bold", fontsize = 16))
-      grid::grid.text(paste(lines, collapse = "\n"), x = 0.05, y = 0.90, just = c("left", "top"),
+      wrapped <- unlist(lapply(lines, function(x) if(nchar(x) == 0) "" else strwrap(x, width = 95, exdent = 4)))
+      grid::grid.text(paste(wrapped, collapse = "\n"), x = 0.05, y = 0.90, just = c("left", "top"),
                       gp = grid::gpar(fontsize = 10, lineheight = 1.3))
     }
     
@@ -699,19 +720,23 @@ shinyServer(
         has.nt <- !isTRUE(input$example) && !is.null(input$file_nt)
         nt <- if(has.nt) nt.Reactive() else NULL
         
-        trim <- if(!is.na(input$trim5) && !is.na(input$trim3)) paste0(input$trim5, " to ", input$trim3)
-                else "automatic (first 20 bases and low-signal tail removed)"
+        trim <- if(!is.na(input$trim5) && !is.na(input$trim3)) paste0("Trimmed region: ", input$trim5, " to ", input$trim3)
         
+        ed <- editingSummaryReactive()
+        summary.lines <- if(is.null(ed)) character(0) else c("Editing summary (edited samples):", ed$on.target, ed$off.target)
+
         grDevices::pdf(file, width = 8.27, height = 11.69)
         on.exit(grDevices::dev.off(), add = TRUE)
         
         reportTextPage(paste0("EditR v", editrversion, " report"), c(
           paste0("Date: ", format(Sys.time(), "%Y-%m-%d %H:%M")),
-          paste0("Guide sequence: ", as.character(guideReactive()), " (as searched in the read)"),
+          paste0("Guide sequence: ", as.character(guideReactive())),
           paste0("P-value cutoff: ", p.val.Reactive()),
-          paste0("Trimmed region: ", trim),
           paste0("Heterozygous position in guide: ", if(is.null(het.position)) "not used" else het.position),
           paste0("Expected editing position in guide: ", if(is.null(expectedPositionReactive())) "not set" else expectedPositionReactive()),
+          trim,
+          "",
+          summary.lines,
           "",
           "Edited samples:",
           paste0("  - ", files$name),

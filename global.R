@@ -414,3 +414,47 @@ SaveGuideFigure <- function(figure, file, format = c("png", "svg")){
            device = function(filename, width, height, ...) grDevices::svg(filename, width, height))
   }
 }
+
+EDITING_OFFTARGET_THRESHOLD <- 10
+
+EditingSummaryLines <- function(editing.list, sample.names, position, threshold = EDITING_OFFTARGET_THRESHOLD){
+  # on-target editing at `position` and off-target editing elsewhere in the guide.
+  # A change is any base that differs from the guide base; with several samples the
+  # percentages are averaged across samples.
+  # returns list(on.target = chr, off.target = chr)
+  bases <- c("A", "C", "G", "T")
+  n <- length(editing.list)
+  guide.seq <- editing.list[[1]]$guide.seq
+  perc.arrays <- lapply(editing.list, function(df) as.matrix(df[, paste0(bases, ".perc")]))
+  mean.perc <- Reduce(`+`, perc.arrays) / n
+  
+  # percent of each non-guide base per position (guide base -> NA)
+  nonref <- function(m){
+    for(i in seq_along(guide.seq)) m[i, bases == toupper(guide.seq[i])] <- NA
+    m
+  }
+  fmt <- function(x) sprintf("%.1f%%", x)
+  
+  mean.nonref <- nonref(mean.perc)
+  ref.base <- toupper(guide.seq[position])
+  alt <- mean.nonref[position, ]
+  main <- which.max(alt)
+  on.target <- paste0("On-target editing at guide position ", position, " (", ref.base, " to ", bases[main], "): ",
+                      fmt(alt[main]))
+  if(n > 1){
+    each <- vapply(perc.arrays, function(m) nonref(m)[position, main], numeric(1))
+    on.target <- paste0(on.target, " (mean of ", n, " samples; ",
+                        paste0(sample.names, ": ", fmt(each), collapse = ", "), ")")
+  }
+  
+  mean.nonref[position, ] <- NA
+  hits <- which(!is.na(mean.nonref) & mean.nonref >= threshold, arr.ind = TRUE)
+  hits <- hits[order(hits[, 1], hits[, 2]), , drop = FALSE]
+  off.target <- if(nrow(hits) == 0){
+    paste0("No off-target editing of ", threshold, "% or more detected at other guide positions.")
+  } else {
+    paste0("Off-target editing (", threshold, "% or more) at guide position ", hits[, 1], " (",
+           toupper(guide.seq[hits[, 1]]), " to ", bases[hits[, 2]], "): ", fmt(mean.nonref[hits]))
+  }
+  list(on.target = on.target, off.target = off.target)
+}

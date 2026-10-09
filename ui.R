@@ -79,6 +79,7 @@ shinyUI(
                 #### Predicted editing tab
                 tabPanel("Predicted Editing",
                          h2("Edited sample(s)"),
+                         uiOutput("editing_summary"),
                          uiOutput("edited_sections"),
                          p("The top plot is the chromatogram of the protospacer. The boxed column marks the expected editing position. The bottom plot shows the percent area of the signal for each base (ACGT) at each position along the guide. Bases that are significantly different from the noise are colored in, color coded relative to their percent area. Most positions of the guide only have one base colored in, as this is due to only one peak being present at that position. In the case of editing, there are more than one base colored in at a position."),
                          conditionalPanel(condition = "!input.example",
