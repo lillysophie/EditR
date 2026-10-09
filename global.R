@@ -376,9 +376,9 @@ GuideTablePlot <- function(table.data, highlight = NULL){
   p <- ggplot(table.data$spread, aes(x = guide.position, y = focal.base))
   if(any(table.data$color$adj.perc != 100)){
     p <- p + geom_tile(data = table.data$color, aes(fill = adj.perc)) +
-      scale_fill_continuous(low = "#f7a8a8", high = "#9acdee", guide = "none")
+      scale_fill_continuous(low = "#9acdee", high = "#f7a8a8", guide = "none")
   } else {
-    p <- p + geom_tile(data = table.data$color, fill = "#9acdee")
+    p <- p + geom_tile(data = table.data$color, fill = "#f7a8a8")
   }
   if(!is.null(highlight)){
     p <- p + annotate("rect", xmin = highlight - 0.5, xmax = highlight + 0.5, ymin = 0.5, ymax = 4.5,
