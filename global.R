@@ -415,10 +415,10 @@ SaveGuideFigure <- function(figure, file, format = c("png", "svg")){
   }
 }
 
-EDITING_OFFTARGET_THRESHOLD <- 10
+EDITING_BYSTANDER_THRESHOLD <- 10
 
-EditingSummaryLines <- function(perc.list, guide.seq, sample.names, position, threshold = EDITING_OFFTARGET_THRESHOLD){
-  # on-target editing at `position` and off-target editing elsewhere in the guide.
+EditingSummaryLines <- function(perc.list, guide.seq, sample.names, position, threshold = EDITING_BYSTANDER_THRESHOLD){
+  # on-target editing at `position` and bystander editing elsewhere in the guide.
   # perc.list: one matrix per sample (rows = guide positions, columns A, C, G, T) with the percent
   # of each base - raw percent areas, or Abbott / non-treated normalised values.
   # A change is any base that differs from the guide base; with several samples the
@@ -451,9 +451,9 @@ EditingSummaryLines <- function(perc.list, guide.seq, sample.names, position, th
   hits <- which(!is.na(mean.nonref) & mean.nonref >= threshold, arr.ind = TRUE)
   hits <- hits[order(hits[, 1], hits[, 2]), , drop = FALSE]
   off.target <- if(nrow(hits) == 0){
-    paste0("No off-target editing of ", threshold, "% or more detected at other guide positions.")
+    paste0("No bystander editing of ", threshold, "% or more detected at other guide positions.")
   } else {
-    paste0("Off-target editing (", threshold, "% or more) at guide position ", hits[, 1], " (",
+    paste0("Bystander editing (", threshold, "% or more) at guide position ", hits[, 1], " (",
            toupper(guide.seq[hits[, 1]]), " to ", bases[hits[, 2]], "): ", fmt(mean.nonref[hits]))
   }
   list(on.target = on.target, off.target = off.target)
