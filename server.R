@@ -419,7 +419,7 @@ shinyServer(
       table.data <- NormalisedTableData(norm.long, sampleTableData(a), p.val.Reactive())
       GuideFigure(GuideChromatogramPlot(NormalisedTraceData(norm.long), length(table.data$guide.seq),
                                         het.position, y.label = "Normalised base area (%)", y.max = 100),
-                  GuideTablePlot(table.data, het.position), title)
+                  GuideTablePlot(table.data, het.position, reverse.colors=!is.null(het.position)), title)
     }
     
     # PNG and SVG export of chromatogram + table as one figure

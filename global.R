@@ -371,14 +371,18 @@ NormalisedTableData <- function(norm.long, edited.table.data, p.val.cutoff){
   list(spread = edit.spread, color = edit.color, guide.seq = edited.table.data$guide.seq)
 }
 
-GuideTablePlot <- function(table.data, highlight = NULL){
+GuideTablePlot <- function(table.data, highlight = NULL, reverse.colors = FALSE){
   positions <- sort(unique(table.data$spread$guide.position))
+  
+  low.color = if(reverse.colors) "#9acdee" else "#f7a8a8"
+  high.color = if(reverse.colors) "#f7a8a8" else "#9acdee"
+  
   p <- ggplot(table.data$spread, aes(x = guide.position, y = focal.base))
   if(any(table.data$color$adj.perc != 100)){
     p <- p + geom_tile(data = table.data$color, aes(fill = adj.perc)) +
-      scale_fill_continuous(low = "#f7a8a8", high = "#9acdee", guide = "none")
+      scale_fill_continuous(low = low.color, high = high.color, guide = "none")
   } else {
-    p <- p + geom_tile(data = table.data$color, fill = "#9acdee")
+    p <- p + geom_tile(data = table.data$color, fill = high.color)
   }
   if(!is.null(highlight)){
     p <- p + annotate("rect", xmin = highlight - 0.5, xmax = highlight + 0.5, ymin = 0.5, ymax = 4.5,
